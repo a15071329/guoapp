@@ -241,6 +241,7 @@ class LunaExoPlayer implements Player {
           DiaryService.add('[ExoPlayer] 自愈重试成功! duration=${c.value.duration}');
         } catch (retryErr, retryStack) {
           DiaryService.add('[ExoPlayer] 自愈重试依然失败! 异常: $retryErr\n堆栈: $retryStack');
+          unawaited(_diagProbe(uri, headers, myGen));
           if (myGen == _openGeneration) {
             _safeAdd(stream.errorController, retryErr.toString());
           }
@@ -325,48 +326,30 @@ class LunaExoPlayer implements Player {
     revision.value++;
   }
 
-  void _startPositionPolling() {
-      /// 播放失败时把本机代理真正回吐的原始响应写进日记（状态码/类型/正文片段）。
-  static Future<void> _diagProbe(
-    Uri? uri,
-    Map<String, String> headers,
-    int gen,
-  ) async {
+  /// 播放失败时把本机代理真正回吐的原始响应写进日记（状态码 / 类型 / 正文片段 / 首个分片）。
+  static Future<void> _diagProbe(Uri? uri, Map<String, String> headers, int gen) async {
     if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
       DiaryService.add('[Diag] gen=$gen 跳过探测: scheme=${uri?.scheme}');
       return;
     }
-    DiaryService.add('[Diag] gen=$gen 探测开始: $uri');
+    DiaryService.add('[Diag] gen=$gen 探测开始 (V3): $uri');
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 6)
       ..userAgent = 'guoapp-diag';
     try {
-      final request = await client.getUrl(uri);
-      headers.forEach((key, value) {
-        try {
-          request.headers.set(key, value);
-        } catch (_) {}
-      });
-      final response = await request.close().timeout(const Duration(seconds: 10));
-      final bytes = await response
-          .fold<List<int>>(<int>[], (all, chunk) {
-            if (all.length < 4096) {
-              all.addAll(
-                chunk.length > 4096 - all.length
-                    ? chunk.sublist(0, 4096 - all.length)
-                    : chunk,
-              );
-            }
-            return all;
-          })
-          .timeout(const Duration(seconds: 10));
+      final response = await _diagGet(client, uri, headers);
+      final bytes = await _diagRead(response, 8192);
       final text = utf8.decode(bytes, allowMalformed: true);
       var preview = text.replaceAll('\n', ' ').replaceAll('\r', ' ').trim();
-      if (preview.length > 320) preview = preview.substring(0, 320);
+      if (preview.length > 300) preview = preview.substring(0, 300);
       DiaryService.add(
-        '[Diag] gen=$gen HTTP=${response.statusCode} '
-        'type=${response.headers.contentType} len=${bytes.length} body=$preview',
+        '[Diag] gen=$gen 清单 HTTP=${response.statusCode} type=${response.headers.contentType} '
+        'len=${bytes.length} body=$preview',
       );
+      final child = _diagFirstAddress(text);
+      if (child != null) {
+        await _diagChild(client, child, headers, gen);
+      }
     } catch (error) {
       DiaryService.add('[Diag] gen=$gen 探测失败: $error');
     } finally {
@@ -374,6 +357,70 @@ class LunaExoPlayer implements Player {
     }
   }
 
+  static Future<HttpClientResponse> _diagGet(
+    HttpClient client,
+    Uri uri,
+    Map<String, String> headers,
+  ) async {
+    final request = await client.getUrl(uri).timeout(const Duration(seconds: 10));
+    headers.forEach((key, value) {
+      try {
+        request.headers.set(key, value);
+      } catch (_) {}
+    });
+    return request.close().timeout(const Duration(seconds: 12));
+  }
+
+  static Future<List<int>> _diagRead(HttpClientResponse response, int limit) async {
+    return response.fold<List<int>>(<int>[], (all, chunk) {
+      if (all.length < limit) {
+        all.addAll(chunk.length > limit - all.length ? chunk.sublist(0, limit - all.length) : chunk);
+      }
+      return all;
+    }).timeout(const Duration(seconds: 12));
+  }
+
+  /// 从 m3u8 文本里挑出第一条真实地址（普通行，或 URI="..." 里的地址）。
+  static String? _diagFirstAddress(String text) {
+    for (final raw in text.split('\n')) {
+      var line = raw.trim();
+      if (line.isEmpty) continue;
+      final marker = line.indexOf('URI="');
+      if (marker >= 0) {
+        final start = marker + 5;
+        final end = line.indexOf('"', start);
+        if (end <= start) continue;
+        line = line.substring(start, end);
+      } else if (line.startsWith('#')) {
+        continue;
+      }
+      if (line.startsWith('http')) return line;
+    }
+    return null;
+  }
+
+  /// 顺带探一下清单里第一条分片/密钥：判断本机代理改写出来的地址能不能用。
+  static Future<void> _diagChild(
+    HttpClient client,
+    String child,
+    Map<String, String> headers,
+    int gen,
+  ) async {
+    try {
+      final childUri = Uri.tryParse(child);
+      if (childUri == null) return;
+      final response = await _diagGet(client, childUri, headers);
+      final bytes = await _diagRead(response, 512);
+      DiaryService.add(
+        '[Diag] gen=$gen 分片 HTTP=${response.statusCode} type=${response.headers.contentType} '
+        'len=${bytes.length} path=${childUri.path}',
+      );
+    } catch (error) {
+      DiaryService.add('[Diag] gen=$gen 分片探测失败: $error');
+    }
+  }
+
+  void _startPositionPolling() {
     _positionPollTimer?.cancel();
     _positionPollTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
       final c = _controller;
