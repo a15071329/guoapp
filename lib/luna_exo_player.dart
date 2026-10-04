@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
@@ -214,7 +215,8 @@ class LunaExoPlayer implements Player {
       DiaryService.add(
           '[ExoPlayer] c.initialize() 成功! duration=${c.value.duration}, size=${c.value.size}, isInitialized=${c.value.isInitialized}');
     } catch (e, stack) {
-      DiaryService.add('[ExoPlayer] 首次 initialize 失败: $e');
+      DiaryService.add('[ExoPlayer] 首次 initialize 失败 (gen=$myGen): $e');
+      unawaited(_diagProbe(uri, headers, myGen));
       // 如果首次尝试失败，且为网络视频，则原地使用交替格式（HLS <-> MP4）自愈重试
       if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
         final alternateFormat = formatHint == VideoFormat.hls ? null : VideoFormat.hls;
@@ -324,6 +326,54 @@ class LunaExoPlayer implements Player {
   }
 
   void _startPositionPolling() {
+      /// 播放失败时把本机代理真正回吐的原始响应写进日记（状态码/类型/正文片段）。
+  static Future<void> _diagProbe(
+    Uri? uri,
+    Map<String, String> headers,
+    int gen,
+  ) async {
+    if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
+      DiaryService.add('[Diag] gen=$gen 跳过探测: scheme=${uri?.scheme}');
+      return;
+    }
+    DiaryService.add('[Diag] gen=$gen 探测开始: $uri');
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 6)
+      ..userAgent = 'guoapp-diag';
+    try {
+      final request = await client.getUrl(uri);
+      headers.forEach((key, value) {
+        try {
+          request.headers.set(key, value);
+        } catch (_) {}
+      });
+      final response = await request.close().timeout(const Duration(seconds: 10));
+      final bytes = await response
+          .fold<List<int>>(<int>[], (all, chunk) {
+            if (all.length < 4096) {
+              all.addAll(
+                chunk.length > 4096 - all.length
+                    ? chunk.sublist(0, 4096 - all.length)
+                    : chunk,
+              );
+            }
+            return all;
+          })
+          .timeout(const Duration(seconds: 10));
+      final text = utf8.decode(bytes, allowMalformed: true);
+      var preview = text.replaceAll('\n', ' ').replaceAll('\r', ' ').trim();
+      if (preview.length > 320) preview = preview.substring(0, 320);
+      DiaryService.add(
+        '[Diag] gen=$gen HTTP=${response.statusCode} '
+        'type=${response.headers.contentType} len=${bytes.length} body=$preview',
+      );
+    } catch (error) {
+      DiaryService.add('[Diag] gen=$gen 探测失败: $error');
+    } finally {
+      client.close(force: true);
+    }
+  }
+
     _positionPollTimer?.cancel();
     _positionPollTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
       final c = _controller;
