@@ -59,7 +59,7 @@ func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
 		variant, _ := row.(map[string]any)
 		meta := nestedMap(variant, "video_meta")
 		codec := strings.ToLower(mapString(meta, "codec_type"))
-		if codec == "bytevc2" || strings.Contains(strings.ToLower(mapString(variant, "gear_des_key")), "bytevc2") {
+		if codec == "bytevc2" {
 			continue
 		}
 		addresses := hongguoMediaAddresses(variant)
