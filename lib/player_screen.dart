@@ -163,6 +163,11 @@ class _PlayerScreenState extends State<PlayerScreen>
       ? _player.state.position.inMilliseconds / 1000
       : _resumePosition;
 
+  bool get _hongguoSource {
+    final drama = widget.detail.drama;
+    return drama.source == 'hongguo' || drama.id.startsWith('hongguo:');
+  }
+
   @override
   void initState() {
     super.initState();
@@ -182,7 +187,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     widget.store.addListener(_accessChanged);
     _player =
         widget.playerFactory?.call() ??
-        (Platform.isAndroid
+        (Platform.isAndroid && !_hongguoSource
             ? LunaExoPlayer()
             : Player(
                 configuration: const PlayerConfiguration(
@@ -190,7 +195,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                   logLevel: MPVLogLevel.error,
                 ),
               ));
-    _video = widget.videoBuilder == null && !Platform.isAndroid
+    _video = widget.videoBuilder == null && _player is! LunaExoPlayer
         ? VideoController(
             _player,
             configuration: VideoControllerConfiguration(
@@ -1045,7 +1050,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         _plan = plan;
         installed = true;
         _acceptErrors = true;
-        DiaryService.add('[Play] 调用 _player.open: url=${plan.url}, headers=${plan.headers.keys.toList()}');
+        DiaryService.add(
+          '[Play] 调用 _player.open: 内核=${_player is LunaExoPlayer ? "ExoPlayer" : "mpv"} '
+          '钥匙=${plan.decryptionKey.isEmpty ? "无" : "${plan.decryptionKey.length}位"} '
+          'url=${plan.url}, headers=${plan.headers.keys.toList()}',
+        );
         await _player.open(
           Media(
             plan.url,
