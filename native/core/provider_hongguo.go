@@ -198,16 +198,16 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if !hongguoNumericID.MatchString(videoID) || !hongguoNumericID.MatchString(seriesID) {
 		return providerMedia{}, fmt.Errorf("红果章节 ID 无效，请重新获取章节")
 	}
-	media, nativeErr := d.resolveHongguoAppMedia(ctx, videoID)
-	if nativeErr == nil {
+	media, pageErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID)
+	if pageErr == nil {
 		return media, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
 	}
-	media, pageErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID)
-	if pageErr == nil {
-		return media, nil
+	appMedia, nativeErr := d.resolveHongguoAppMedia(ctx, videoID)
+	if nativeErr == nil {
+		return appMedia, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
@@ -216,7 +216,7 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if apiErr == nil {
 		return media, nil
 	}
-	return providerMedia{}, fmt.Errorf("红果 App 取流失败：%v；网页取流失败：%v；备用取流失败：%w", publicError(nativeErr), publicError(pageErr), apiErr)
+	return providerMedia{}, fmt.Errorf("红果网页取流失败：%v；App 取流失败：%v；备用取流失败：%w", publicError(pageErr), publicError(nativeErr), apiErr)
 }
 
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
